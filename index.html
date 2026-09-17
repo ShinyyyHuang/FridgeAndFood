@@ -25,9 +25,9 @@ body{
 .btn:hover{background:#f3f6f8;}
 .btn.primary{background:var(--green);border-color:var(--green);color:#fff;}
 .btn.primary:hover{background:var(--green-dark);}
-.tabs{display:flex;gap:4px;padding:0 12px;}
+.tabs{display:flex;gap:4px;padding:0 12px;overflow-x:auto;}
 .tab{border:none;background:transparent;padding:10px 16px;font-size:14px;font-family:inherit;
-     color:var(--muted);cursor:pointer;border-bottom:2.5px solid transparent;font-weight:600;}
+     color:var(--muted);cursor:pointer;border-bottom:2.5px solid transparent;font-weight:600;white-space:nowrap;}
 .tab.active{color:var(--green-dark);border-bottom-color:var(--green);}
 /* ---------- 面板 ---------- */
 main{padding:14px 16px 80px;max-width:1100px;margin:0 auto;}
@@ -99,6 +99,8 @@ tr.expired td input[data-field=expireDate]{color:var(--red);font-weight:700;}
   font-size:15px;line-height:1;padding:0 3px;}
 .chip-x:hover{opacity:1;}
 .actual-chip{background:#d1fae5;color:#065f46;padding:3px 9px;}
+.history-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.history-meta{margin-left:auto;color:var(--muted);font-size:12px;}
 /* ---------- 弹窗 ---------- */
 .modal{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;}
 .modal[hidden]{display:none;}
@@ -141,6 +143,7 @@ tr.expired td input[data-field=expireDate]{color:var(--red);font-weight:700;}
   <nav class="tabs">
     <button class="tab active" data-tab="fridge">冰箱里有什么</button>
     <button class="tab" data-tab="meals">后几天食谱</button>
+    <button class="tab" data-tab="history">过往食用</button>
   </nav>
 </div>
 
@@ -208,6 +211,11 @@ tr.expired td input[data-field=expireDate]{color:var(--red);font-weight:700;}
       <div class="pantry-items" id="pantryItems"></div>
     </div>
     <div id="days"></div>
+  </section>
+
+  <!-- ============ Tab 3 ============ -->
+  <section id="tab-history" class="panel">
+    <div id="historyList"></div>
   </section>
 </main>
 
@@ -523,10 +531,70 @@ function renderDays(){
   wrap.innerHTML = html;
 }
 
+/* =========================================================
+   渲染：过往食用
+   ========================================================= */
+function renderHistory(){
+  const wrap  = document.getElementById('historyList');
+  const today = todayStr();
+
+  /* 收集所有严格早于今天的日期，按从近到远排序 */
+  const dates = Object.keys(state.meals)
+    .filter(d => d < today)
+    .sort((a, b) => a < b ? 1 : (a > b ? -1 : 0));
+
+  const cards = [];
+  for (const date of dates){
+    const day = state.meals[date];
+    if (!day) continue;
+
+    /* 该日所有已勾选的食材（不分餐次） */
+    const eaten = [];
+    for (const k in day){
+      const plan = day[k] && day[k].plan;
+      if (!Array.isArray(plan)) continue;
+      for (const p of plan){
+        if (p.done) eaten.push(p);
+      }
+    }
+    if (!eaten.length) continue;
+
+    /* 同一食材同一天可能多份，聚合计数 */
+    const counter = {};   // key -> {name, count}
+    for (const p of eaten){
+      const key = p.fridgeId || ('name:' + p.name);
+      if (!counter[key]) counter[key] = { name: p.name, count: 0 };
+      counter[key].count++;
+    }
+
+    const d    = parseDate(date);
+    const week = '日一二三四五六'[d.getDay()];
+    const chips = Object.values(counter).map(c =>
+      `<span class="chip actual-chip">${esc(c.name)}${c.count > 1 ? ' ×' + c.count : ''}</span>`
+    ).join('');
+
+    cards.push(`<div class="day-card">
+      <div class="day-head">
+        <span class="day-date">${d.getMonth()+1} 月 ${d.getDate()} 日</span>
+        <span class="day-week">星期${week}</span>
+        <span class="history-meta">共食用 ${eaten.length} 份</span>
+      </div>
+      <div class="history-chips">${chips}</div>
+    </div>`);
+  }
+
+  if (!cards.length){
+    wrap.innerHTML = '<div class="pantry-bar"><span class="empty-hint">还没有过往食用记录，勾选实际吃掉的食材后会在这里出现</span></div>';
+    return;
+  }
+  wrap.innerHTML = cards.join('');
+}
+
 function renderAll(){
   renderFridge();
   renderPantry();
   renderDays();
+  renderHistory();
 }
 
 /* =========================================================
@@ -581,6 +649,7 @@ fridgePanel.addEventListener('change', e => {
   restoreFocus(focus);
   renderPantry();
   renderDays();
+  renderHistory();
 });
 
 function handleAdd(zone){
@@ -736,6 +805,8 @@ document.querySelectorAll('.tab').forEach(t => {
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
     document.querySelectorAll('.panel').forEach(p =>
       p.classList.toggle('active', p.id === 'tab-' + t.dataset.tab));
+    /* 切到过往食用时刷新一次，保证数据最新 */
+    if (t.dataset.tab === 'history') renderHistory();
   });
 });
 
@@ -778,7 +849,7 @@ document.getElementById('fileInput').addEventListener('change', e => {
 });
 
 /* =========================================================
-   云同步
+   云同步（保持原有逻辑，仅注释说明）
    ========================================================= */
 const API = 'https://jsonblob.com/api/jsonBlob';
 
@@ -881,7 +952,7 @@ document.getElementById('btnPushCloud').addEventListener('click', () => pushClou
 syncEatDates();   // 首次加载时校正一次食用日期
 renderAll();
 
-/* 跨天自动刷新（过期状态 / 隐藏规则 / 日期列表） */
+/* 跨天自动刷新（过期状态 / 隐藏规则 / 日期列表 / 过往食用） */
 let lastToday = todayStr();
 setInterval(() => {
   const t = todayStr();
